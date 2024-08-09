@@ -1,0 +1,30 @@
+fconv: True
+min_cache: True
+beta: 0.16
+
+device: gpu
+random_seed: 540
+
+EPOCH: 1000
+BATCH: 1
+LR: 2.0e-3
+frames: 8
+
+shape_scale: 
+  - 668
+  - 668
+
+mark: 20240730-1214
+
+is_month: True
+
+root_dir: /root/autodl-tmp/data/chl_mask/part_chl_mask
+mask_dir: /root/autodl-tmp/data/rename_input
+code_dir: /root/workspace/src/
+
+ckpts_dir: /root/autodl-tmp/record/ckpts
+stats_dir: /root/autodl-tmp/record/stats/
+img_dir: /root/autodl-tmp/record/img/
+log_dir: /root/autodl-tmp/record/log/
+output_dir: /root/autodl-tmp/record/output/
+ckpt_files: /root/autodl-tmp/record/ckpts/20231110-0414/checkpoint_362_0.118410.pth.tar
