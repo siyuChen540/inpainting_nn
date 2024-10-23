@@ -1,0 +1,30 @@
+fconv: True
+min_cache: True
+beta: 0.16
+
+device: gpu
+random_seed: 540
+
+EPOCH: 1000
+BATCH: 1
+LR: 2.0e-3
+frames: 4
+
+shape_scale: 
+  - 480
+  - 480
+
+mark: 20230323-1116
+
+is_month: True
+
+root_dir: D:/ceeres/03_Program/01_SYSUM/00_science/04_image_recovery/01_program/00_dataset/chlora_month
+mask_dir: D:/ceeres/03_Program/01_SYSUM/00_science/04_image_recovery/01_program/00_dataset/chl_mask
+code_dir: D:/ceeres/03_Program/01_SYSUM/00_science/04_image_recovery/01_program/git_repo/convlstm_en_de/
+
+ckpts_dir: D:/ceeres/03_Program/01_SYSUM/00_science/04_image_recovery/01_program/git_repo/convlstm_en_de/record/ckpts/
+stats_dir: D:/ceeres/03_Program/01_SYSUM/00_science/04_image_recovery/01_program/git_repo/convlstm_en_de/record/stats/
+img_dir: D:/ceeres/03_Program/01_SYSUM/00_science/04_image_recovery/01_program/git_repo/convlstm_en_de/record/img/
+log_dir: D:/ceeres/03_Program/01_SYSUM/00_science/04_image_recovery/01_program/git_repo/convlstm_en_de/record/log/
+
+ckpt_files: D:/ceeres/03_Program/01_SYSUM/00_science/04_image_recovery/01_program/git_repo/convlstm_en_de/record/ckpts/20230323-1116/checkpoint_405_0.101827.pth.tar
