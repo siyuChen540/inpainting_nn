@@ -1,0 +1,32 @@
+fconv: True
+min_cache: True
+beta: 0.84
+
+device: cuda
+random_seed: 42
+
+EPOCH: 1000
+BATCH: 1
+LR: 2.0e-3
+frames: 10
+
+shape_scale: 
+  - 480
+  - 480
+
+channel_scale: 
+  - 4
+  - 8
+  - 16
+
+mark: 2024_ISEA
+
+is_month: True
+
+root_dir: /root/autodl-tmp/input_256
+mask_dir: /root/autodl-tmp/mask_256
+inputChunkJSON_dir: /root/dataset/cropped_ds_256.json
+
+ckpts_dir: /root/autodl-tmp/record/ckpts
+
+ckpt_files:
