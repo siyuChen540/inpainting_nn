@@ -14,39 +14,39 @@ Chlorophyll a (Chl a) concentration, a vital indicator of water quality and cruc
 
 # Environment setup
   1. Conda
-    ```shell
-    % Install conda for Linux, for other OS download miniconda at https://docs.conda.io/en/latest/miniconda.html
-    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-    bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda
-    $HOME/miniconda/bin/conda init bash
+  ```shell
+  % Install conda for Linux, for other OS download miniconda at https://docs.conda.io/en/latest/miniconda.html
+  wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+  bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda
+  $HOME/miniconda/bin/conda init bash
 
-    conda create -n ftc-lstm-env python=3.11
-    conda activate ftc-lstm-env
-    pip install -r requirements.txt
-    ```
+  conda create -n ftc-lstm-env python=3.11
+  conda activate ftc-lstm-env
+  pip install -r requirements.txt
+  ```
 
   2. Docker
-    ```shell
-    docker build -t ftc-lstm:latest.
-    docker run -it --rm -v $(pwd):/workspace ftc-lstm:latest
-    ```
+  ```shell
+  docker build -t ftc-lstm:latest.
+  docker run -it --rm -v $(pwd):/workspace ftc-lstm:latest
+  ```
 
 # Interface <a name="interface"></a>
   Run
-    ```shell
-    python main.py
-    ```
+  ```shell
+  python main.py
+  ```
 
 # Citation
-  ```BibTeX
-  @ARTICLE{10509652,
-    author={Chen, Siyu and Deng, Lin and Zhao, Jun},
-    journal={IEEE Transactions on Geoscience and Remote Sensing}, 
-    title={Enhanced Reconstruction of Satellite-Derived Monthly Chlorophyll a Concentration With Fourier Transform Convolutional-LSTM}, 
-    year={2024},
-    volume={62},
-    number={},
-    pages={1-14},
-    keywords={Image reconstruction;Remote sensing;Clouds;Biological system modeling;Long short term memory;Data models;Convolution;Deep learning;Fourier transform convolutional long short-term memory (FTC-LSTM);gap-filling;remote sensing;South China Sea (SCS)},
-    doi={10.1109/TGRS.2024.3394399}}
-  ```
+```BibTeX
+@ARTICLE{10509652,
+  author={Chen, Siyu and Deng, Lin and Zhao, Jun},
+  journal={IEEE Transactions on Geoscience and Remote Sensing}, 
+  title={Enhanced Reconstruction of Satellite-Derived Monthly Chlorophyll a Concentration With Fourier Transform Convolutional-LSTM}, 
+  year={2024},
+  volume={62},
+  number={},
+  pages={1-14},
+  keywords={Image reconstruction;Remote sensing;Clouds;Biological system modeling;Long short term memory;Data models;Convolution;Deep learning;Fourier transform convolutional long short-term memory (FTC-LSTM);gap-filling;remote sensing;South China Sea (SCS)},
+  doi={10.1109/TGRS.2024.3394399}}
+```
