@@ -1,8 +1,12 @@
 import os
-import yaml
+import sys
 import time
 from collections import OrderedDict
 
+# add local directory to python path
+sys.add_package_dir(os.path.dirname(__file__))
+
+import yaml
 import numpy as np
 from tqdm import tqdm
 from dotenv import load_dotenv
@@ -18,7 +22,7 @@ from neptune.types import File
 
 from dataset import inpainting_DS, inpainting_DS_v2
 from module import ConvGRU_cell, ConvGRU_cell_v2,ED, Encoder, Decoder
-from utils import SSIM,record_dir_setting_create, EarlyStopping, random_seed_set
+from utils import SSIM, record_dir_setting_create, EarlyStopping, random_seed_set
 
 load_dotenv()
 
