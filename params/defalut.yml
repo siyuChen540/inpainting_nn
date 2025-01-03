@@ -1,32 +1,116 @@
-fconv: True
-min_cache: True
-beta: 0.84
+# add discription here
+# Args:
+#   - FCONV: if use fourier transform convolution
+#   - BETA: combined loss function weight, the greater the value, the more weight on the SSIM loss
+#   - DEVICE: cuda or cpu
+#   - RD_SEED: random seed
+#   - EPOCH: training epoch
+#   - BATCH: batch size
+#   - LR: learning rate
+#   - FRAMES: time series frames number
+#   - SHAPE_SCALE: the scale of the input image, if not match the input image size, will be resized
+#   - INPUT_FOLDER: input image folders
+#   - MASK_FOLDER: cloud mask folders
+#   - CHUNK_JSON: the message of the input chunk with given frames length
+#   - CKPTS_DIR: the folder to save the model checkpoints
+#   - CKPT_FILES: the model checkpoints files
 
-device: cuda
-random_seed: 42
-
-EPOCH: 1000
-BATCH: 1
-LR: 2.0e-3
-frames: 10
-
-shape_scale: 
+MARK:         2024_ISEA
+FCONV:        True
+BETA:         0.84
+DEVICE:       cuda
+RD_SEED:      42
+EPOCH:        1000
+BATCH:        1
+LR:           2.0e-3
+FRAMES:       10
+SHAPE_SCALE: 
   - 480
   - 480
+INPUT_FOLDER: /root/autodl-tmp/input_256
+MASK_FOLDER:  /root/autodl-tmp/mask_256
+CHUNK_JSON:   /root/dataset/cropped_ds_256.json
 
-channel_scale: 
-  - 4
-  - 8
-  - 16
+CKPTS_DIR:    /root/autodl-tmp/record/ckpts
 
-mark: 2024_ISEA
+CKPT_FILES:   None
 
-is_month: True
+ENCODER_LAYERS:
+  - basic:
+      - layer0
+        type: conv
+        in_channels: 4
+        out_channels: 8
+        kernel_size: 3
+        stride: 1
+        padding: 1
+      - layer1
+        type: conv
+        in_channels: 8
+        out_channels: 16
+        kernel_size: 3
+        stride: 1
+        padding: 1
+      - layer2
+        type: conv
+        in_channels: 16
+        out_channels: 32
+        kernel_size: 3
+        stride: 1
+        padding: 1
+  - gru:
+      - layer0
+        type: convgru
+        in_channels: 32
+        out_channels: 64
+        kernel_size: 3
+      - layer1
+        type: convgru
+        in_channels: 64
+        out_channels: 128
+        kernel_size: 3
+      - layer2
+        type: convgru
+        in_channels: 128
+        out_channels: 256
+        kernel_size: 3
 
-root_dir: /root/autodl-tmp/input_256
-mask_dir: /root/autodl-tmp/mask_256
-inputChunkJSON_dir: /root/dataset/cropped_ds_256.json
-
-ckpts_dir: /root/autodl-tmp/record/ckpts
-
-ckpt_files:
+DECODER_LAYERS:
+  - basic:
+      - layer0
+        type: deconv
+        in_channels: 256
+        out_channels: 128
+        kernel_size: 4
+        stride: 2
+        padding: 1
+      - layer1
+        type: deconv
+        in_channels: 128
+        out_channels: 64
+        kernel_size: 4
+        stride: 2
+        padding: 1
+      - layer2
+        type: deconv
+        in_channels: 64
+        out_channels: 32
+        kernel_size: 4
+        stride: 2
+        padding: 1
+  - gru:
+      - layer0
+        type: convgru
+        in_channels: 32
+        out_channels: 16
+        kernel_size: 3
+      - layer1
+        type: convgru
+        in_channels: 16
+        out_channels: 8
+        kernel_size: 3
+      - layer2
+        type: convgru
+        in_channels: 8
+        out_channels: 4
+        kernel_size: 3
