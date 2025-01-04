@@ -1,8 +1,9 @@
 """
     @author: Siyu Chen
-    @date: 2024-12-30
+    @date: 2025-1-4
     @description: Encoder for ED model.
     @file: module/models/encoder.py
+    @email: chensy57@mail2.sysu.edu.cn
 """
 
 from typing import List, Dict, Any
@@ -14,9 +15,22 @@ from ..utils import build_layers, build_rnn_cells
 
 class Encoder(nn.Module):
     """
+    Encoder is optimized for reduced memory consumption.
+
     Encoder: each stage includes:
       1) several conv/pool layers (nn.Sequential)
       2) one rnn cell (e.g. ConvGRUCell)
+    
+    Args:
+        stage_conv_cfgs (List[List[Dict[str, Any]]]): each stage's conv layers config
+        stage_rnn_cfgs  (List[Dict[str, Any]]): each stage's rnn cell config
+    
+    Inputs:
+        x (torch.Tensor): input frames (B, T, C, H, W)
+    
+    Outputs:
+        hidden_states (List[torch.Tensor]): hidden states of each stage
+
     """
     def __init__(
         self,
@@ -27,7 +41,8 @@ class Encoder(nn.Module):
         assert len(stage_conv_cfgs) == len(stage_rnn_cfgs)
 
         self.convs = nn.ModuleList([
-            build_layers(conv_cfgs) for conv_cfgs in stage_conv_cfgs
+            build_layers(conv_cfgs) 
+            for conv_cfgs in stage_conv_cfgs
         ])
         self.rnns  = build_rnn_cells(stage_rnn_cfgs)
 
