@@ -1,5 +1,11 @@
         
-from typing import Tuple, List
+from typing import Tuple
+
+import os
+import numpy as np
+import torch
+from torch import nn
+
 from .early_stopping import EarlyStopping
 from .image_processing import crop_npy_files, stitching_npy
 from .metrics import SSIM, ssim, msssim
@@ -72,7 +78,7 @@ def crop_npy_files(
     for filename in os.listdir(input_dir):
         if filename.endswith('.npy'):
             filepath = os.path.join(input_dir, filename)
-            data = np.load(filepath)
+            data:np.ndarray = np.load(filepath)
             height, width = data.shape
 
             patches = []

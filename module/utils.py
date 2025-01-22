@@ -158,7 +158,64 @@ def build_rnn_cells(cfg_list: List[Dict[str, Any]]) -> nn.ModuleList:
     cells = [build_rnn_cell(cfg) for cfg in cfg_list]
     return nn.ModuleList(cells)
 
+def layer_builder(layer_cls):
+    def wrapper(cfg: Dict[str, Any]) -> nn.Module:
+        layer = layer_cls(
+            in_channels=cfg.get("in_channels", 1),
+            out_channels=cfg.get("out_channels", 1),
+            kernel_size=cfg.get("kernel_size", 3),
+            stride=cfg.get("stride", 1),
+            padding=cfg.get("padding", 0),
+            bias=cfg.get("bias", True)
+        )
+        return layer
+    return wrapper
+
+def crnn_builder(layer_cls):
+    def wrapper(cfg: Dict[str, Any]) -> nn.Module:
+        layer = layer_cls(
+            in_channels=cfg.get("in_channels", 1),
+            out_channels=cfg.get("out_channels", 1),
+            kernel_size=cfg.get("kernel_size", 3),
+            stride=cfg.get("stride", 1),
+            padding=cfg.get("padding", 0),
+            bias=cfg.get("bias", True)
+        )
+        return layer
+    return wrapper
+
+@layer_builder
+def build_conv2d(cfg: Dict[str, Any]) -> nn.Module:
+    pass
+
+@layer_builder
+def build_deconv2d(cfg: Dict[str, Any]) -> nn.Module:
+    pass
+
+@layer_builder
+def build_pool2d(cfg: Dict[str, Any]) -> nn.Module:
+    pass
+
+@crnn_builder
+def build_CLSTM(cfg: Dict[str, Any]) -> nn.Module:
+    pass
+
+@crnn_builder
+def build_CGRU(cfg: Dict[str, Any]) -> nn.Module:
+    pass
+
+@crnn_builder
+def build_CLSTM(cfg: Dict[str, Any]) -> nn.Module:
+    pass
+
+@crnn_builder
+def build_CLSTM(cfg: Dict[str, Any]) -> nn.Module:
+    pass
+
+
+
 BUILDERS_REGISTRY: Dict[str, Any] = {
+
         "relu":       (nn.ReLU,       {"inplace": True}),
         "leaky_relu": (nn.LeakyReLU,  {"negative_slope": 0.2, "inplace": True}),
         "tanh":       (nn.Tanh,       {}),
