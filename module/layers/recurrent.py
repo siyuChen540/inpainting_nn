@@ -1,450 +1,688 @@
 """
-    @Author: mikey.zhaopeng 
-    @Date: 2025-01-03 16:52:04 
-    @Last Modified by: mikey.zhaopeng
-    @Last Modified time: 2025-01-03 16:52:32
+@author: Siyu Chen
+@date: 2025.1.28
+@file:recurrent.py
+@description:
+    This module provides a set of convolutional recurrent neural 
+    network (RNN) cells with optional frequency-domain convolution 
+    and depthwise-separable convolution.
+
+@Classes:
+    BaseFrequencyRNNCell: A base RNN cell that provides common 
+        hidden initialization and optional frequency-domain 
+        operations for child classes.
+    ConvLSTMCell: A convolutional LSTM cell supporting optional 
+        frequency-domain convolution.
+    ConvGRUCell: A convolutional GRU cell supporting optional 
+        frequency-domain convolution.
+    ConvGRUCellV2: A convolutional GRU cell variant using 
+        depthwise-separable convolution.
+    FTCGRUCell: A frequency and temporal convolutional GRU cell 
+        with optional SE blocks and depthwise-separable conv.
+    SingleFrameFTCGRUCell: A specialized FTCGRUCell that processes 
+        only one frame.
 """
+
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
+from typing import Optional, Tuple
 from .basic import DSConv2d, SELayer
 
-class ConvLSTM_cell(nn.Module):
+
+class BaseFrequencyRNNCell(nn.Module):
     """
-    A ConvLSTM cell with optional frequency-domain convolution (fconv).
+    Base RNN cell that includes shared hidden initialization and optional frequency-domain
+    operations for child classes.
+
+    Attributes:
+        input_channels (int): Number of input channels.
+        hidden_channels (int): Number of hidden channels.
+        kernel_size (int): Convolution kernel size.
+        use_ftc (bool): Whether to use frequency-domain convolution.
+        num_frames (int): Number of frames in sequence.
+        device (str): Device for computation ('cuda' or 'cpu').
+        fourier_norm (str): Normalization to use in Fourier transform.
+        spatial_scale_mode (str): Interpolation mode for resizing in frequency domain.
+        padding (int): Convolutional padding derived from kernel_size.
     """
-    def __init__(self, input_channels, kernel_size, features_num, fconv=True, frames_len=10, device='cuda'):
+
+    def __init__(
+        self,
+        input_channels: int,
+        hidden_channels: int,
+        kernel_size: int,
+        use_ftc: bool = False,
+        num_frames: int = 10,
+        device: str = "cuda",
+        fourier_norm: str = "ortho",
+        spatial_scale_mode: str = "bilinear",
+    ) -> None:
         super().__init__()
         self.input_channels = input_channels
-        self.features_num = features_num
+        self.hidden_channels = hidden_channels
         self.kernel_size = kernel_size
-        self.fconv = fconv
-        self.padding = (kernel_size - 1) // 2
-        self.frames_len = frames_len
+        self.use_ftc = use_ftc
+        self.num_frames = num_frames
         self.device = device
+        self.fourier_norm = fourier_norm
+        self.spatial_scale_mode = spatial_scale_mode
+        self.padding = (kernel_size - 1) // 2
 
-        groups_num = max(1, (4 * self.features_num) // 4)
-        channel_num = 4 * self.features_num
+    def _init_hidden_2d(
+        self,
+        inputs: Optional[torch.Tensor],
+        hidden_state: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """
+        Initializes a 2D hidden state if none is provided.
 
-        self.conv = nn.Sequential(
-            nn.Conv2d(self.input_channels + self.features_num, channel_num, self.kernel_size, padding=self.padding),
-            nn.GroupNorm(groups_num, channel_num)
+        Args:
+            inputs (torch.Tensor, optional): Input tensor of shape [T, B, C, H, W].
+            hidden_state (torch.Tensor, optional): Hidden tensor of shape [B, hidden_channels, H, W].
+
+        Returns:
+            torch.Tensor: Newly initialized or existing hidden state on the correct device.
+        """
+        if hidden_state is not None:
+            return hidden_state.to(self.device)
+        if inputs is not None:
+            batch_size = inputs.size(1)
+            height, width = inputs.size(-2), inputs.size(-1)
+        else:
+            batch_size, height, width = 1, 1, 1
+        return torch.zeros(
+            batch_size, self.hidden_channels, height, width, device=self.device
         )
 
-        if fconv:
-            self.semi_conv = nn.Sequential(
-                nn.Conv2d(2 * (self.input_channels + self.features_num), channel_num, self.kernel_size, padding=self.padding),
-                nn.GroupNorm(groups_num, channel_num),
-                nn.LeakyReLU(inplace=True)
-            )
-            self.global_conv = nn.Sequential(
-                nn.Conv2d(8 * self.features_num, 4 * self.features_num, self.kernel_size, padding=self.padding),
-                nn.GroupNorm(groups_num, channel_num)
-            )
+    def _init_hidden_2d_lstm(
+        self,
+        inputs: Optional[torch.Tensor],
+        hidden_state: Optional[Tuple[torch.Tensor, torch.Tensor]],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Initializes a 2D LSTM hidden + cell state if none is provided.
 
-    def forward(self, inputs, hidden_state=None):
-        hx, cx = self._init_hidden(inputs, hidden_state)
-        output_frames = []
+        Args:
+            inputs (torch.Tensor, optional): Input of shape [T, B, C, H, W].
+            hidden_state (tuple, optional): (h, c) states.
 
-        for t in range(self.frames_len):
-            x = inputs[t].to(hx.device)
-
-            hy, cy = self._step(x, hx, cx)
-            output_frames.append(hy)
-            hx, cy = hy, cy
-
-        return torch.stack(output_frames), (hy, cy)
-
-    def _init_hidden(self, inputs, hidden_state):
+        Returns:
+            (torch.Tensor, torch.Tensor): LSTM hidden and cell states.
+        """
         if hidden_state is not None:
-            return hidden_state
-
-        bsz = inputs.size(1) if inputs is not None else 1
-        hx = torch.zeros(bsz, self.features_num, self.shape[0], self.shape[1], device=self.device)
+            return (
+                hidden_state[0].to(self.device),
+                hidden_state[1].to(self.device),
+            )
+        if inputs is not None:
+            batch_size = inputs.size(1)
+            height, width = inputs.size(-2), inputs.size(-1)
+        else:
+            batch_size, height, width = 1, 1, 1
+        hx = torch.zeros(
+            batch_size, self.hidden_channels, height, width, device=self.device
+        )
         cx = torch.zeros_like(hx)
         return hx, cx
 
-    def _step(self, x: torch.Tensor, hx: torch.Tensor, cx: torch.Tensor):
-        concat = torch.cat((x, hx), dim=1)
-        gates_out = self.conv(concat)           # 
+    def _apply_frequency_convolution(
+        self, combined: torch.Tensor, conv_module: nn.Module, gates_out: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Applies frequency-domain convolution to the concatenated input and hidden state.
 
-        if self.fconv:
-            gates_out = self._fconv(concat, gates_out)
+        Args:
+            combined (torch.Tensor): Combined input + hidden of shape [B, C, H, W].
+            conv_module (nn.Module): Frequency convolution module (semi_conv).
+            gates_out (torch.Tensor): Current gate output in spatial domain.
 
-        in_gate, forget_gate, hat_cell_gate, out_gate = torch.split(gates_out, self.features_num, dim=1)
-        in_gate = torch.sigmoid(in_gate)
-        forget_gate = torch.sigmoid(forget_gate)
-        hat_cell_gate = torch.tanh(hat_cell_gate)
-        out_gate = torch.sigmoid(out_gate)
-
-        cy = (forget_gate * cx) + (in_gate * hat_cell_gate)
-        hy = out_gate * torch.tanh(cy)
-
-        return hy, cy
-    
-    def _fconv(self, concat, gates_out):
-        # Optional frequency domain convolution
-        # Fourier transform
-        fft_dim = (-2, -1)
-        freq = torch.fft.rfftn(concat, dim=fft_dim, norm='ortho')
-        freq = torch.stack((freq.real, freq.imag), dim=-1)
-        # Rearrange for convolution
-        freq = freq.permute(0, 1, 4, 2, 3).contiguous()
-        N, C, _, H, W2 = freq.size()
-        freq = freq.view(N, -1, H, W2)
-        ffc_conv = self.semi_conv(freq)
-        # iFFT
-        ifft_shape = ffc_conv.shape[-2:]
-        ffc_out = torch.fft.irfftn(torch.complex(ffc_conv, torch.zeros_like(ffc_conv)), s=ifft_shape, dim=fft_dim, norm='ortho')
-        # Resize to match gates_out size
-        ffc_out_resize = F.interpolate(ffc_out, size=gates_out.size()[-2:], mode='bilinear', align_corners=False)
-        combined = torch.cat((ffc_out_resize, gates_out), 1)
-        gates_out = self.global_conv(combined)
+        Returns:
+            torch.Tensor: Updated gate outputs after frequency operation and global convolution.
+        """
+        with torch.no_grad() if not self.use_ftc else torch.enable_grad():
+            fft_dim = (-2, -1)
+            freq = torch.fft.rfftn(combined, dim=fft_dim, norm=self.fourier_norm)
+            freq = torch.stack((freq.real, freq.imag), dim=-1)
+            freq = freq.permute(0, 1, 4, 2, 3).contiguous()  # [B, C, 2, H, W//2+1]
+            bsz, chn, _, h, w2 = freq.size()
+            freq = freq.view(bsz, -1, h, w2)  # merge channel & complex dim
+            ffc_out = conv_module(freq)
+            ifft_shape = ffc_out.shape[-2:]
+            ffc_out = torch.fft.irfftn(
+                torch.complex(ffc_out, torch.zeros_like(ffc_out)),
+                s=ifft_shape,
+                dim=fft_dim,
+                norm=self.fourier_norm,
+            )
+            ffc_out_resize = F.interpolate(
+                ffc_out,
+                size=gates_out.size()[-2:],
+                mode=self.spatial_scale_mode,
+                align_corners=False,
+            )
+            return ffc_out_resize
         return gates_out
 
-class ConvGRU_cell(nn.Module):
-    """
-    A ConvGRU cell with optional frequency-domain convolution (fconv).
-    Args Description:
-        shape        : input shape (H, W)
-        channels     : input channels
-        kernel_size  : convolution kernel size
-        features_num : number of features in the cell
-        fconv        : whether to use frequency-domain convolution
-        frames_len   : number of frames in the input sequence
-        is_cuda      : whether to use cuda device
-    """
-    def __init__(self, input_channels, kernel_size, features_num, fconv=True, frames_len=10, device='cuda'):
-        super().__init__()
-        self.input_channels = input_channels
-        self.features_num = features_num
-        self.kernel_size = kernel_size
-        self.fconv = fconv
-        self.padding = (kernel_size - 1) // 2
-        self.frames_len = frames_len
-        self.device = device
 
-        groups_num = max(1, self.features_num)  # 3 gates for GRU
-        channel_num = 3 * self.features_num     # GRU has 3 gates: update, reset, candidate
+class ConvLSTMCell(BaseFrequencyRNNCell):
+    """
+    Convolutional LSTM cell with optional frequency-domain convolution.
 
-        # Standard convolution for GRU gates (update, reset, candidate)
+    The cell follows these equations:
+        i_t = sigmoid(W_i * [x_t, h_{t-1}])
+        f_t = sigmoid(W_f * [x_t, h_{t-1}])
+        g_t = tanh   (W_g * [x_t, h_{t-1}])
+        o_t = sigmoid(W_o * [x_t, h_{t-1}])
+        c_t = f_t * c_{t-1} + i_t * g_t
+        h_t = o_t * tanh(c_t)
+    """
+
+    def __init__(
+        self,
+        input_channels: int,
+        hidden_channels: int,
+        kernel_size: int,
+        use_ftc: bool = True,
+        num_frames: int = 10,
+        device: str = "cuda",
+        fourier_norm: str = "ortho",
+        spatial_scale_mode: str = "bilinear",
+    ) -> None:
+        super().__init__(
+            input_channels,
+            hidden_channels,
+            kernel_size,
+            use_ftc,
+            num_frames,
+            device,
+            fourier_norm,
+            spatial_scale_mode,
+        )
+        groups_num = max(1, (4 * self.hidden_channels) // 4)
+        channel_num = 4 * self.hidden_channels
+
         self.conv = nn.Sequential(
-            nn.Conv2d(self.channels + self.features_num, channel_num, self.kernel_size, padding=self.padding),
-            nn.GroupNorm(groups_num, channel_num)
+            nn.Conv2d(
+                self.input_channels + self.hidden_channels,
+                channel_num,
+                self.kernel_size,
+                padding=self.padding,
+            ),
+            nn.GroupNorm(groups_num, channel_num),
         )
 
-        # Optional frequency-domain convolution for fconv=True  
-        if fconv:
+        if self.use_ftc:
             self.semi_conv = nn.Sequential(
-                nn.Conv2d(2 * (self.channels + self.features_num), channel_num, self.kernel_size, padding=self.padding),
+                nn.Conv2d(
+                    2 * (self.input_channels + self.hidden_channels),
+                    channel_num,
+                    self.kernel_size,
+                    padding=self.padding,
+                ),
                 nn.GroupNorm(groups_num, channel_num),
-                nn.LeakyReLU(inplace=True)
+                nn.LeakyReLU(inplace=True),
             )
             self.global_conv = nn.Sequential(
-                nn.Conv2d(6 * self.features_num, 3 * self.features_num, self.kernel_size, padding=self.padding),
-                nn.GroupNorm(groups_num, channel_num)
+                nn.Conv2d(
+                    8 * self.hidden_channels,
+                    4 * self.hidden_channels,
+                    self.kernel_size,
+                    padding=self.padding,
+                ),
+                nn.GroupNorm(groups_num, channel_num),
             )
 
-    def forward(self, inputs, hidden_state=None):
-        hx = self._init_hidden(inputs, hidden_state)
-        output_frames = []
+    def forward(
+        self,
+        inputs: torch.Tensor,
+        hidden_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Forward pass of ConvLSTM.
 
-        for t in range(self.frames_len):
-            x = inputs[t].to(hx.device)
+        Args:
+            inputs (torch.Tensor): [T, B, C, H, W] input sequence.
+            hidden_state (tuple, optional): (h, c) states.
 
-            hy = self._step(x, hx)
-            output_frames.append(hy)
-            hx = hy
+        Returns:
+            (torch.Tensor, (torch.Tensor, torch.Tensor)):
+                Stacked hidden states for each timestep, final (h, c).
+        """
+        hx, cx = self._init_hidden_2d_lstm(inputs, hidden_state)
+        outputs = []
 
-        return torch.stack(output_frames), hx  # Only return hidden state in GRU
+        for t in range(self.num_frames):
+            x_t = inputs[t].to(hx.device)
+            hx, cx = self._step(x_t, hx, cx)
+            outputs.append(hx)
 
-    def _init_hidden(self, inputs, hidden_state):
-        if hidden_state is not None:
-            return hidden_state
+        return torch.stack(outputs), (hx, cx)
 
-        bsz = inputs.size(1) if inputs is not None else 1
-        hx = torch.zeros(bsz, self.features_num, self.shape[0], self.shape[1], device=self.device)
-        return hx
+    def _step(
+        self,
+        x: torch.Tensor,
+        hx: torch.Tensor,
+        cx: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Single LSTM step.
 
-    def _step(self, x: torch.Tensor, hx: torch.Tensor):
-        concat = torch.cat((x, hx), dim=1)
-        gates_out = self.conv(concat)
+        Args:
+            x (torch.Tensor): [B, C, H, W] input at time t.
+            hx (torch.Tensor): [B, hidden_channels, H, W] previous hidden state.
+            cx (torch.Tensor): [B, hidden_channels, H, W] previous cell state.
 
-        # Optional frequency domain convolution
-        if self.fconv:
-            gates_out = self._fconv(concat, gates_out)
+        Returns:
+            (hx, cx): Updated LSTM hidden and cell state.
+        """
+        combined = torch.cat([x, hx], dim=1)
+        gates_out = self.conv(combined)
 
-        # Split gates: [reset, update, candidate]
-        reset_gate, update_gate, candidate_gate = torch.split(gates_out, self.features_num, dim=1)
+        if self.use_ftc:
+            freq_out = self._apply_frequency_convolution(
+                combined, self.semi_conv, gates_out
+            )
+            gates_out = torch.cat([freq_out, gates_out], dim=1)
+            gates_out = self.global_conv(gates_out)
+
+        in_gate, forget_gate, cell_gate, out_gate = torch.split(
+            gates_out, self.hidden_channels, dim=1
+        )
+        in_gate = torch.sigmoid(in_gate)
+        forget_gate = torch.sigmoid(forget_gate)
+        cell_gate = torch.tanh(cell_gate)
+        out_gate = torch.sigmoid(out_gate)
+
+        cx_new = forget_gate * cx + in_gate * cell_gate
+        hx_new = out_gate * torch.tanh(cx_new)
+        return hx_new, cx_new
+
+
+class ConvGRUCell(BaseFrequencyRNNCell):
+    """
+    Convolutional GRU cell with optional frequency-domain convolution.
+    GRU includes reset, update, and candidate gates.
+
+    The cell follows:
+        r_t = sigmoid(W_r * [x_t, h_{t-1}])
+        z_t = sigmoid(W_z * [x_t, h_{t-1}])
+        n_t = tanh   (W_n * [x_t, r_t * h_{t-1}])
+        h_t = z_t * h_{t-1} + (1 - z_t) * n_t
+    """
+
+    def __init__(
+        self,
+        input_channels: int,
+        hidden_channels: int,
+        kernel_size: int,
+        use_ftc: bool = True,
+        num_frames: int = 10,
+        device: str = "cuda",
+        fourier_norm: str = "ortho",
+        spatial_scale_mode: str = "bilinear",
+    ) -> None:
+        super().__init__(
+            input_channels,
+            hidden_channels,
+            kernel_size,
+            use_ftc,
+            num_frames,
+            device,
+            fourier_norm,
+            spatial_scale_mode,
+        )
+        groups_num = max(1, self.hidden_channels)
+        channel_num = 3 * self.hidden_channels
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(
+                self.input_channels + self.hidden_channels,
+                channel_num,
+                self.kernel_size,
+                padding=self.padding,
+            ),
+            nn.GroupNorm(groups_num, channel_num),
+        )
+
+        if self.use_ftc:
+            self.semi_conv = nn.Sequential(
+                nn.Conv2d(
+                    2 * (self.input_channels + self.hidden_channels),
+                    channel_num,
+                    self.kernel_size,
+                    padding=self.padding,
+                ),
+                nn.GroupNorm(groups_num, channel_num),
+                nn.LeakyReLU(inplace=True),
+            )
+            self.global_conv = nn.Sequential(
+                nn.Conv2d(
+                    6 * self.hidden_channels,
+                    3 * self.hidden_channels,
+                    self.kernel_size,
+                    padding=self.padding,
+                ),
+                nn.GroupNorm(groups_num, channel_num),
+            )
+
+    def forward(
+        self,
+        inputs: torch.Tensor,
+        hidden_state: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass of ConvGRU.
+
+        Args:
+            inputs (torch.Tensor): [T, B, C, H, W] input sequence.
+            hidden_state (torch.Tensor, optional): [B, hidden_channels, H, W].
+
+        Returns:
+            (torch.Tensor, torch.Tensor): (stacked hidden states, final hidden state).
+        """
+        hx = self._init_hidden_2d(inputs, hidden_state)
+        outputs = []
+
+        for t in range(self.num_frames):
+            x_t = inputs[t].to(hx.device)
+            hx = self._step(x_t, hx)
+            outputs.append(hx)
+
+        return torch.stack(outputs), hx
+
+    def _step(
+        self,
+        x: torch.Tensor,
+        hx: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Single GRU step.
+
+        Args:
+            x (torch.Tensor): [B, C, H, W] input at time t.
+            hx (torch.Tensor): [B, hidden_channels, H, W] previous hidden state.
+
+        Returns:
+            torch.Tensor: Updated hidden state.
+        """
+        combined = torch.cat([x, hx], dim=1)
+        gates_out = self.conv(combined)
+
+        if self.use_ftc:
+            freq_out = self._apply_frequency_convolution(
+                combined, self.semi_conv, gates_out
+            )
+            gates_out = torch.cat([freq_out, gates_out], dim=1)
+            gates_out = self.global_conv(gates_out)
+
+        reset_gate, update_gate, candidate_gate = torch.split(
+            gates_out, self.hidden_channels, dim=1
+        )
         reset_gate = torch.sigmoid(reset_gate)
         update_gate = torch.sigmoid(update_gate)
         candidate_gate = torch.tanh(candidate_gate)
-
-        # Compute hidden state update
-        hy = update_gate * hx + (1 - update_gate) * candidate_gate
-
-        return hy
-    
-    def _fconv(self, concat, gates_out):
-        # Fourier transform
-        fft_dim = (-2, -1)
-        freq = torch.fft.rfftn(concat, dim=fft_dim, norm='ortho')
-        freq = torch.stack((freq.real, freq.imag), dim=-1)      
-        # Rearrange for convolution
-        freq = freq.permute(0, 1, 4, 2, 3).contiguous()
-        N, C, _, H, W2 = freq.size()
-        freq = freq.view(N, -1, H, W2)
-        ffc_conv = self.semi_conv(freq)
-        # iFFT
-        ifft_shape = ffc_conv.shape[-2:]
-        ffc_out = torch.fft.irfftn(torch.complex(ffc_conv, torch.zeros_like(ffc_conv)), s=ifft_shape, dim=fft_dim, norm='ortho')
-        # Resize to match gates_out size
-        ffc_out_resize = F.interpolate(ffc_out, size=gates_out.size()[-2:], mode='bilinear', align_corners=False)
-        combined = torch.cat((ffc_out_resize, gates_out), 1)
-        gates_out = self.global_conv(combined)
-        return gates_out
+        return update_gate * hx + (1 - update_gate) * candidate_gate
 
 
-
-class ConvGRU_cell_v2(ConvGRU_cell):
+class ConvGRUCellV2(ConvGRUCell):
     """
-    A ConvGRU cell with optional frequency-domain convolution (fconv) and in deep wise separable convolution.
-        def __init__(self, input_channels, hidden_channels, kernel_size, 
-                 use_se=False, num_frames=10, device='cuda', fourier_norm='ortho', 
-                 spatial_scale_mode='bilinear'):
+    A variant of the ConvGRU cell that uses depthwise-separable convolution.
     """
-    def __init__(self, input_channels, kernel_size, hidden_channels, fconv=True, num_frames=10, device='cuda'):
-        super().__init__(input_channels, kernel_size, hidden_channels, fconv, num_frames, device)
-        self.channels = input_channels
-        self.hidden_channels = hidden_channels
-        self.kernel_size = kernel_size
-        self.fconv = fconv
-        self.padding = (kernel_size - 1) // 2
-        self.num_frames = num_frames
-        self.device = device
 
-        groups_num = max(1, self.hidden_channels)  # 3 gates for GRU
-        channel_num = 3 * self.hidden_channels  # GRU has 3 gates: update, reset, candidate
+    def __init__(
+        self,
+        input_channels: int,
+        hidden_channels: int,
+        kernel_size: int,
+        use_se: bool = False,
+        num_frames: int = 10,
+        device: str = "cuda",
+        fourier_norm: str = "ortho",
+        spatial_scale_mode: str = "bilinear",
+        use_ftc: bool = False,
+    ) -> None:
+        super().__init__(
+            input_channels,
+            hidden_channels,
+            kernel_size,
+            use_ftc,
+            num_frames,
+            device,
+            fourier_norm,
+            spatial_scale_mode,
+        )
+        self.use_se = use_se
+        groups_num = max(1, self.hidden_channels)
+        channel_num = 3 * self.hidden_channels
 
-        # Standard convolution for GRU gates (update, reset, candidate)
         self.conv = nn.Sequential(
-            DSConv2d(self.channels + self.hidden_channels, channel_num, self.kernel_size, padding=self.padding),
-            nn.GroupNorm(groups_num, channel_num)
+            DSConv2d(
+                self.input_channels + self.hidden_channels,
+                channel_num,
+                self.kernel_size,
+                padding=self.padding,
+            ),
+            nn.GroupNorm(groups_num, channel_num),
         )
 
-        # Optional frequency-domain convolution for fconv=True
-        if fconv:
+        if self.use_ftc:
             self.semi_conv = nn.Sequential(
-                DSConv2d(2 * (self.channels + self.hidden_channels), channel_num, self.kernel_size, padding=self.padding),
+                DSConv2d(
+                    2 * (self.input_channels + self.hidden_channels),
+                    channel_num,
+                    self.kernel_size,
+                    padding=self.padding,
+                ),
                 nn.GroupNorm(groups_num, channel_num),
-                nn.LeakyReLU(inplace=True)
+                nn.LeakyReLU(inplace=True),
             )
             self.global_conv = nn.Sequential(
-                DSConv2d(6 * self.hidden_channels, 3 * self.hidden_channels, self.kernel_size, padding=self.padding),
-                nn.GroupNorm(groups_num, channel_num)
+                DSConv2d(
+                    6 * self.hidden_channels,
+                    3 * self.hidden_channels,
+                    self.kernel_size,
+                    padding=self.padding,
+                ),
+                nn.GroupNorm(groups_num, channel_num),
             )
 
 
-class FTCGRUCell(nn.Module):
+class FTCGRUCell(BaseFrequencyRNNCell):
     """
-    Frequency and Temporal Convolutional Gated Recurrent Unit (FTCGRU) Cell.
-    
-    This cell integrates convolutional operations in the frequency domain and utilizes depthwise separable convolutions optionally enhanced with Squeeze-and-Excitation (SE) blocks.
-    
-    Args:
-        input_channels (int): Number of input channels.
-        hidden_channels (int): Number of hidden channels in the GRU cell.
-        kernel_size (int or tuple): Size of the convolutional kernel.
-        use_se (bool, optional): Whether to use Squeeze-and-Excitation blocks. Default is False.
-        num_frames (int, optional): Number of frames to process (sequence length). Default is 10.
-        device (str, optional): Device to perform computations on ('cuda' or 'cpu'). Default is 'cuda'.
-        fourier_norm (str, optional): Normalization method for Fourier transforms. Default is 'ortho'.
-        spatial_scale_mode (str, optional): Interpolation mode for spatial scaling. Default is 'bilinear'.
-    """
-    def __init__(self, input_channels, hidden_channels, kernel_size, 
-                 use_se=False, num_frames=10, device='cuda', fourier_norm='ortho', 
-                 spatial_scale_mode='bilinear'):
-        super(FTCGRUCell, self).__init__()
-        self.input_channels = input_channels
-        self.hidden_channels = hidden_channels
-        self.kernel_size = kernel_size
-        self.padding = (kernel_size - 1) // 2
-        self.num_frames = num_frames
-        self.device = device
-        self.use_se = use_se
-        self.fourier_norm = fourier_norm
-        self.spatial_scale_mode = spatial_scale_mode
+    Frequency and Temporal Convolutional GRU (FTCGRU) Cell with optional Squeeze-and-Excitation
+    and depthwise-separable convolution. It combines spatial and frequency-domain operations
+    to update the hidden state.
 
-        # Number of groups for Group Normalization
-        self.num_groups = max(1, self.hidden_channels)
-        # Total number of gates: update, reset, and candidate
-        self.num_gates = 3 * self.hidden_channels
-        
-        # Convolution to compute all gates at once
-        self.conv = nn.Conv2d(
-            in_channels=self.input_channels + self.hidden_channels, 
-            out_channels=self.num_gates, 
-            kernel_size=self.kernel_size, 
-            padding=self.padding
+    Attributes:
+        use_se (bool): Whether to use a Squeeze-and-Excitation layer.
+        freq_conv (nn.Module): Depthwise-separable convolution used in frequency domain.
+        global_conv (nn.Module): Global convolution after combining frequency and spatial features.
+        group_norm (nn.GroupNorm): Group normalization applied to gates.
+        batch_norm (nn.BatchNorm2d): Batch normalization applied to frequency features.
+    """
+
+    def __init__(
+        self,
+        input_channels: int,
+        hidden_channels: int,
+        kernel_size: int,
+        use_se: bool = False,
+        num_frames: int = 10,
+        device: str = "cuda",
+        fourier_norm: str = "ortho",
+        spatial_scale_mode: str = "bilinear",
+    ) -> None:
+        super().__init__(
+            input_channels,
+            hidden_channels,
+            kernel_size,
+            use_ftc=True,  # We always do frequency conv here
+            num_frames=num_frames,
+            device=device,
+            fourier_norm=fourier_norm,
+            spatial_scale_mode=spatial_scale_mode,
         )
-        
-        # Group Normalization
+        self.use_se = use_se
+
+        self.num_gates = 3 * self.hidden_channels
+        self.num_groups = max(1, self.hidden_channels)
+
+        self.conv = nn.Conv2d(
+            in_channels=self.input_channels + self.hidden_channels,
+            out_channels=self.num_gates,
+            kernel_size=self.kernel_size,
+            padding=self.padding,
+        )
         self.group_norm = nn.GroupNorm(self.num_groups, self.num_gates)
         self.leaky_relu = nn.LeakyReLU(inplace=True)
-        
-        # Batch Normalization for frequency-domain convolution
         self.batch_norm = nn.BatchNorm2d(self.num_gates)
-        
-        # Depthwise Separable Convolution in the frequency domain
+
         self.freq_conv = DSConv2d(
-            in_channels=2 * (self.input_channels + self.hidden_channels), 
-            out_channels=self.num_gates, 
-            kernel_size=self.kernel_size, 
-            padding=self.padding
+            in_channels=2 * (self.input_channels + self.hidden_channels),
+            out_channels=self.num_gates,
+            kernel_size=self.kernel_size,
+            padding=self.padding,
         )
-        
-        # Global Convolution after combining spatial and frequency features
         self.global_conv = nn.Conv2d(
-            in_channels=6 * self.hidden_channels, 
-            out_channels=3 * self.hidden_channels, 
-            kernel_size=self.kernel_size, 
-            padding=self.padding
+            in_channels=6 * self.hidden_channels,
+            out_channels=self.num_gates,
+            kernel_size=self.kernel_size,
+            padding=self.padding,
         )
-        
-        # Optional Squeeze-and-Excitation layer
         if self.use_se:
             self.se_layer = SELayer(6 * self.hidden_channels)
-    
-    def forward(self, inputs=None, hidden_state=None):
+
+    def forward(
+        self,
+        inputs: torch.Tensor,
+        hidden_state: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass of the FTCGRU cell.
-        
+        Forward pass over T frames. Returns all hidden states and final hidden.
+
         Args:
-            inputs (torch.Tensor, optional): Input tensor of shape (sequence_length, batch_size, input_channels, height, width).
-                                             If None, a zero tensor is used.
-            hidden_state (torch.Tensor, optional): Previous hidden state tensor of shape (batch_size, hidden_channels, height, width).
-        
+            inputs (torch.Tensor): [T, B, C, H, W] input sequence.
+            hidden_state (torch.Tensor, optional): [B, hidden_channels, H, W] init hidden state.
+
         Returns:
-            tuple:
-                - torch.Tensor: Output tensor containing all hidden states for each frame, shape (sequence_length, batch_size, hidden_channels, height, width).
-                - torch.Tensor: Final hidden state tensor, shape (batch_size, hidden_channels, height, width).
+            (torch.Tensor, torch.Tensor): (stacked all hidden states, final hidden state).
         """
-        hidden_state = self._initialize_hidden(inputs, hidden_state)
-        output_frames = []
+        hx = self._init_hidden_2d(inputs, hidden_state)
+        outputs = []
 
         for t in range(self.num_frames):
-            # Get the t-th input frame
-            input_t = inputs[t].to(hidden_state.device)
+            x_t = inputs[t].to(hx.device)
+            hx = self._step(x_t, hx)
+            outputs.append(hx)
 
-            # Perform a single GRU step
-            hidden_state = self._gru_step(input_t, hidden_state)
-            output_frames.append(hidden_state)
+        return torch.stack(outputs), hx
 
-        # Stack all hidden states across the temporal dimension
-        return torch.stack(output_frames), hidden_state  # Return all hidden states and the final hidden state
-    
-    def _initialize_hidden(self, inputs, hidden_state):
+    def _step(
+        self,
+        x: torch.Tensor,
+        hx: torch.Tensor,
+    ) -> torch.Tensor:
         """
-        Initialize the hidden state.
-        
+        Single step update of the FTCGRU.
+
         Args:
-            inputs (torch.Tensor, optional): Input tensor to determine batch size.
-            hidden_state (torch.Tensor, optional): Existing hidden state.
-        
+            x (torch.Tensor): [B, C, H, W] input at time t.
+            hx (torch.Tensor): Hidden state from previous step.
+
         Returns:
-            torch.Tensor: Initialized hidden state tensor.
+            torch.Tensor: Updated hidden state at time t.
         """
-        if hidden_state is not None:
-            return hidden_state
-        else:   
-            batch_size = inputs.size(1)
-            height, width = inputs.size(-2), inputs.size(-1)
+        combined = torch.cat((x, hx), dim=1)
+        gates_out = self.conv(combined)
+        gates_out = self.leaky_relu(gates_out)
 
-            # Initialize hidden state with zeros
-            hidden_state = torch.zeros(
-                batch_size, self.hidden_channels, 
-                height, width, 
-                device=self.device
-            )
-
-            return hidden_state
-    
-    def _gru_step(self, input_tensor: torch.Tensor, hidden: torch.Tensor):
-        """
-        Perform a single GRU step with convolutional and frequency-domain operations.
-        
-        Args:
-            input_tensor (torch.Tensor): Input tensor at current time step, shape (batch_size, input_channels, height, width).
-            hidden (torch.Tensor): Previous hidden state tensor, shape (batch_size, hidden_channels, height, width).
-        
-        Returns:
-            torch.Tensor: Updated hidden state tensor, shape (batch_size, hidden_channels, height, width).
-        """
-        # Concatenate input and hidden state along the channel dimension
-        combined = torch.cat((input_tensor, hidden), dim=1)
-        # Compute gate outputs
-        gates = self.conv(combined)
-        gates = self.leaky_relu(gates)
-
-        # Fourier transform along the spatial dimensions
-        fft_dims = (-2, -1)
-        freq_domain = torch.fft.rfftn(combined, dim=fft_dims, norm=self.fourier_norm)
+        # Frequency transform
+        fft_dim = (-2, -1)
+        freq_domain = torch.fft.rfftn(combined, dim=fft_dim, norm=self.fourier_norm)
         freq_domain = torch.stack((freq_domain.real, freq_domain.imag), dim=-1)
-        
-        # Rearrange tensor for convolution
         freq_domain = freq_domain.permute(0, 1, 4, 2, 3).contiguous()
-        N, C, _, H, W_freq = freq_domain.size()
-        freq_domain = freq_domain.view(N, -1, H, W_freq)
-        
+        bsz, chn, _, h, w2 = freq_domain.size()
+        freq_domain = freq_domain.view(bsz, -1, h, w2)
+
         if self.use_se:
-            # Apply Squeeze-and-Excitation if enabled
+            # Optionally apply SE in frequency space
             freq_domain = self.se_layer(freq_domain)
-        
-        # Apply depthwise separable convolution in the frequency domain
+
         freq_features = self.freq_conv(freq_domain)
         freq_features = self.batch_norm(freq_features)
         freq_features = self.leaky_relu(freq_features)
-        
-        # Inverse Fourier transform to return to spatial domain
+
         ifft_shape = freq_features.shape[-2:]
         freq_complex = torch.complex(freq_features, torch.zeros_like(freq_features))
-        spatial_features = torch.fft.irfftn(freq_complex, s=ifft_shape, dim=fft_dims, norm=self.fourier_norm)
-        
-        # Resize spatial features to match gate outputs
-        spatial_features_resized = F.interpolate(
-            spatial_features, 
-            size=gates.size()[-2:], 
-            mode=self.spatial_scale_mode, 
-            align_corners=False
+        spatial_features = torch.fft.irfftn(
+            freq_complex, s=ifft_shape, dim=fft_dim, norm=self.fourier_norm
         )
-        
-        # Combine frequency and spatial features
-        combined_features = torch.cat((spatial_features_resized, gates), dim=1)
+        spatial_features_resized = F.interpolate(
+            spatial_features,
+            size=gates_out.size()[-2:],
+            mode=self.spatial_scale_mode,
+            align_corners=False,
+        )
+
+        combined_features = torch.cat((spatial_features_resized, gates_out), dim=1)
         combined_features = self.global_conv(combined_features)
         combined_features = self.group_norm(combined_features)
-        
-        # Split combined features into reset, update, and candidate gates
+
         reset_gate, update_gate, candidate_gate = torch.split(
             combined_features, self.hidden_channels, dim=1
         )
         reset_gate = torch.sigmoid(reset_gate)
         update_gate = torch.sigmoid(update_gate)
         candidate_gate = torch.tanh(candidate_gate)
-        
-        # Compute the updated hidden state
-        updated_hidden = update_gate * hidden + (1 - update_gate) * candidate_gate
-        
-        return updated_hidden
 
-class singleFrameFTCGRUCell(FTCGRUCell):
-    def __init__(self, input_shape, input_channels, hidden_channels, kernel_size, 
-                 use_se=False, num_frames=1, device='cuda', fourier_norm='ortho', 
-                 spatial_scale_mode='bilinear'):
-        super().__init__(input_shape, input_channels, hidden_channels, kernel_size, 
-                         use_se, num_frames, device, fourier_norm, spatial_scale_mode)
+        out = update_gate * hx + (1 - update_gate) * candidate_gate
+        return out
 
-    def forward(self, input=None, hidden_state=None):
-        hidden_state = super()._initialize_hidden(input, hidden_state)
-        input = input.to(hidden_state.device)
-        assert len(input.shape) == 4, "input diementions number is not 4"
-        return super()._gru_step(input, hidden_state)
+
+class SingleFrameFTCGRUCell(FTCGRUCell):
+    """
+    A specialized FTCGRUCell that processes only a single frame (num_frames=1).
+    """
+
+    def __init__(
+        self,
+        input_channels: int,
+        hidden_channels: int,
+        kernel_size: int,
+        use_se: bool = False,
+        num_frames: int = 1,
+        device: str = "cuda",
+        fourier_norm: str = "ortho",
+        spatial_scale_mode: str = "bilinear",
+    ) -> None:
+        super().__init__(
+            input_channels=input_channels,
+            hidden_channels=hidden_channels,
+            kernel_size=kernel_size,
+            use_se=use_se,
+            num_frames=num_frames,
+            device=device,
+            fourier_norm=fourier_norm,
+            spatial_scale_mode=spatial_scale_mode,
+        )
+
+    def forward(
+        self,
+        input_tensor: torch.Tensor,
+        hidden_state: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Forward pass for a single frame. Returns the updated hidden state.
+
+        Args:
+            input_tensor (torch.Tensor): [B, C, H, W] input.
+            hidden_state (torch.Tensor, optional): [B, hidden_channels, H, W].
+
+        Returns:
+            torch.Tensor: Updated hidden state.
+        """
+        hx = self._init_hidden_2d(input_tensor.unsqueeze(0), hidden_state)
+        input_tensor = input_tensor.to(hx.device)
+        assert len(input_tensor.shape) == 4, "Input must be [B, C, H, W]."
+        return self._step(input_tensor, hx)
