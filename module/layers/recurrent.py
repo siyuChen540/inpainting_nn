@@ -36,7 +36,7 @@ class BaseFrequencyRNNCell(nn.Module):
     operations for child classes.
 
     Attributes:
-        input_channels (int): Number of input channels.
+        in_channels (int): Number of input channels.
         hidden_channels (int): Number of hidden channels.
         kernel_size (int): Convolution kernel size.
         use_ftc (bool): Whether to use frequency-domain convolution.
@@ -49,7 +49,7 @@ class BaseFrequencyRNNCell(nn.Module):
 
     def __init__(
         self,
-        input_channels: int,
+        in_channels: int,
         hidden_channels: int,
         kernel_size: int,
         use_ftc: bool = False,
@@ -59,7 +59,7 @@ class BaseFrequencyRNNCell(nn.Module):
         spatial_scale_mode: str = "bilinear",
     ) -> None:
         super().__init__()
-        self.input_channels = input_channels
+        self.in_channels = in_channels
         self.hidden_channels = hidden_channels
         self.kernel_size = kernel_size
         self.use_ftc = use_ftc
@@ -180,7 +180,7 @@ class ConvLSTMCell(BaseFrequencyRNNCell):
 
     def __init__(
         self,
-        input_channels: int,
+        in_channels: int,
         hidden_channels: int,
         kernel_size: int,
         use_ftc: bool = True,
@@ -190,7 +190,7 @@ class ConvLSTMCell(BaseFrequencyRNNCell):
         spatial_scale_mode: str = "bilinear",
     ) -> None:
         super().__init__(
-            input_channels,
+            in_channels,
             hidden_channels,
             kernel_size,
             use_ftc,
@@ -204,7 +204,7 @@ class ConvLSTMCell(BaseFrequencyRNNCell):
 
         self.conv = nn.Sequential(
             nn.Conv2d(
-                self.input_channels + self.hidden_channels,
+                self.in_channels + self.hidden_channels,
                 channel_num,
                 self.kernel_size,
                 padding=self.padding,
@@ -215,7 +215,7 @@ class ConvLSTMCell(BaseFrequencyRNNCell):
         if self.use_ftc:
             self.semi_conv = nn.Sequential(
                 nn.Conv2d(
-                    2 * (self.input_channels + self.hidden_channels),
+                    2 * (self.in_channels + self.hidden_channels),
                     channel_num,
                     self.kernel_size,
                     padding=self.padding,
@@ -313,7 +313,7 @@ class ConvGRUCell(BaseFrequencyRNNCell):
 
     def __init__(
         self,
-        input_channels: int,
+        in_channels: int,
         hidden_channels: int,
         kernel_size: int,
         use_ftc: bool = True,
@@ -323,7 +323,7 @@ class ConvGRUCell(BaseFrequencyRNNCell):
         spatial_scale_mode: str = "bilinear",
     ) -> None:
         super().__init__(
-            input_channels,
+            in_channels,
             hidden_channels,
             kernel_size,
             use_ftc,
@@ -337,7 +337,7 @@ class ConvGRUCell(BaseFrequencyRNNCell):
 
         self.conv = nn.Sequential(
             nn.Conv2d(
-                self.input_channels + self.hidden_channels,
+                self.in_channels + self.hidden_channels,
                 channel_num,
                 self.kernel_size,
                 padding=self.padding,
@@ -348,7 +348,7 @@ class ConvGRUCell(BaseFrequencyRNNCell):
         if self.use_ftc:
             self.semi_conv = nn.Sequential(
                 nn.Conv2d(
-                    2 * (self.input_channels + self.hidden_channels),
+                    2 * (self.in_channels + self.hidden_channels),
                     channel_num,
                     self.kernel_size,
                     padding=self.padding,
@@ -432,7 +432,7 @@ class ConvGRUCellV2(ConvGRUCell):
 
     def __init__(
         self,
-        input_channels: int,
+        in_channels: int,
         hidden_channels: int,
         kernel_size: int,
         use_se: bool = False,
@@ -443,7 +443,7 @@ class ConvGRUCellV2(ConvGRUCell):
         use_ftc: bool = False,
     ) -> None:
         super().__init__(
-            input_channels,
+            in_channels,
             hidden_channels,
             kernel_size,
             use_ftc,
@@ -458,7 +458,7 @@ class ConvGRUCellV2(ConvGRUCell):
 
         self.conv = nn.Sequential(
             DSConv2d(
-                self.input_channels + self.hidden_channels,
+                self.in_channels + self.hidden_channels,
                 channel_num,
                 self.kernel_size,
                 padding=self.padding,
@@ -469,7 +469,7 @@ class ConvGRUCellV2(ConvGRUCell):
         if self.use_ftc:
             self.semi_conv = nn.Sequential(
                 DSConv2d(
-                    2 * (self.input_channels + self.hidden_channels),
+                    2 * (self.in_channels + self.hidden_channels),
                     channel_num,
                     self.kernel_size,
                     padding=self.padding,
@@ -504,7 +504,7 @@ class FTCGRUCell(BaseFrequencyRNNCell):
 
     def __init__(
         self,
-        input_channels: int,
+        in_channels: int,
         hidden_channels: int,
         kernel_size: int,
         use_se: bool = False,
@@ -514,7 +514,7 @@ class FTCGRUCell(BaseFrequencyRNNCell):
         spatial_scale_mode: str = "bilinear",
     ) -> None:
         super().__init__(
-            input_channels,
+            in_channels,
             hidden_channels,
             kernel_size,
             use_ftc=True,  # We always do frequency conv here
@@ -529,7 +529,7 @@ class FTCGRUCell(BaseFrequencyRNNCell):
         self.num_groups = max(1, self.hidden_channels)
 
         self.conv = nn.Conv2d(
-            in_channels=self.input_channels + self.hidden_channels,
+            in_channels=self.in_channels + self.hidden_channels,
             out_channels=self.num_gates,
             kernel_size=self.kernel_size,
             padding=self.padding,
@@ -539,7 +539,7 @@ class FTCGRUCell(BaseFrequencyRNNCell):
         self.batch_norm = nn.BatchNorm2d(self.num_gates)
 
         self.freq_conv = DSConv2d(
-            in_channels=2 * (self.input_channels + self.hidden_channels),
+            in_channels=2 * (self.in_channels + self.hidden_channels),
             out_channels=self.num_gates,
             kernel_size=self.kernel_size,
             padding=self.padding,
@@ -647,7 +647,7 @@ class SingleFrameFTCGRUCell(FTCGRUCell):
 
     def __init__(
         self,
-        input_channels: int,
+        in_channels: int,
         hidden_channels: int,
         kernel_size: int,
         use_se: bool = False,
@@ -657,7 +657,7 @@ class SingleFrameFTCGRUCell(FTCGRUCell):
         spatial_scale_mode: str = "bilinear",
     ) -> None:
         super().__init__(
-            input_channels=input_channels,
+            in_channels=in_channels,
             hidden_channels=hidden_channels,
             kernel_size=kernel_size,
             use_se=use_se,

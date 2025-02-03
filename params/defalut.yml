@@ -37,60 +37,60 @@ CKPT_FILES:   None
 
 ENCODER_LAYERS:
   - basic:
-      - layer0
-        type: conv
-        in_channels: 4
-        out_channels: 8
-        kernel_size: 3
-        stride: 1
-        padding: 1
-      - layer1
-        type: conv
-        in_channels: 8
-        out_channels: 16
-        kernel_size: 3
-        stride: 1
-        padding: 1
-      - layer2
-        type: conv
-        in_channels: 16
-        out_channels: 32
-        kernel_size: 3
-        stride: 1
-        padding: 1
+      - layer0:
+          type: conv
+          in_channels: 4
+          out_channels: 8
+          kernel_size: 3
+          stride: 1
+          padding: 1
+      - layer1:
+          type: conv
+          in_channels: 8
+          out_channels: 16
+          kernel_size: 3
+          stride: 1
+          padding: 1
+      - layer2:
+          type: conv
+          in_channels: 16
+          out_channels: 32
+          kernel_size: 3
+          stride: 1
+          padding: 1
   - gru:
-      - layer0
-        type: convgru
-        in_channels: 32
-        out_channels: 64
-        kernel_size: 3
-      - layer1
-        type: convgru
-        in_channels: 64
-        out_channels: 128
-        kernel_size: 3
-      - layer2
-        type: convgru
-        in_channels: 128
-        out_channels: 256
-        kernel_size: 3
+      - layer0:
+          type: convgru
+          in_channels: 32
+          out_channels: 64
+          kernel_size: 3
+      - layer1:
+          type: convgru
+          in_channels: 64
+          out_channels: 128
+          kernel_size: 3
+      - layer2:
+          type: convgru
+          in_channels: 128
+          out_channels: 256
+          kernel_size: 3
 
 DECODER_LAYERS:
   - basic:
-      - layer0
-        type: deconv
-        in_channels: 256
-        out_channels: 128
-        kernel_size: 4
-        stride: 2
-        padding: 1
-      - layer1
-        type: deconv
-        in_channels: 128
-        out_channels: 64
-        kernel_size: 4
-        stride: 2
-        padding: 1
+      - layer0:
+          type: deconv
+          in_channels: 256
+          out_channels: 128
+          kernel_size: 4
+          stride: 2
+          padding: 1
+      - layer1:
+          type: deconv
+          in_channels: 128
+          out_channels: 64
+          kernel_size: 4
+          stride: 2
+          padding: 1
       - layer2
         type: deconv
         in_channels: 64
