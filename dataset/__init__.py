@@ -1,8 +1,24 @@
+"""
+@author: Siyu Chen
+@date: 2025.1.28
+@file:dataset/__init__.py
+@description:
+    This file implements PyTorch datasets for loading and processing sequential data.
+@classes:
+    - InpaintingDataset: Dataset for loading sequential frames with optional masking.
+    - DataProcessor: Helper class for organizing data files by spatial indices and time.
+    - InpaintingDatasetV2: Dataset for loading cropped sequential frames with matching different patch.
+    - InpaintingDatasetV3: Using multi-threading to load data.
+    - InpaintingDatasetV4: Load all frames in a single tensor.
+"""
+
+
 import os
 import re
 import json
 import time
 from typing import Tuple, List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -381,10 +397,7 @@ class InpaintingDatasetV2(Dataset):
         mask = (torch.rand_like(data) < p).float()
         return data * mask, mask
 
-from concurrent.futures import ThreadPoolExecutor
-import torch.multiprocessing as mp
 class InpaintingDatasetV3(InpaintingDatasetV2):
-
     def __init__(self, 
                  data_root_dir, 
                  num_frames, 
@@ -468,8 +481,8 @@ def test_dataset(ds_cls:Dataset) -> None:
     Test function for InpaintingDatasetV2.
     Validates loading, transformation and error handling.
     """
-    test_root = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/input_256/'
-    test_mask_dir = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/mask_256/'
+    test_root = '/input_256/'
+    test_mask_dir = '/mask_256/'
     try:
         dataset = ds_cls(test_root, num_frames=10, json_file_path=None,
                         enable_mask=True, mask_root_dir=test_mask_dir, 
@@ -494,8 +507,8 @@ def test_dataset(ds_cls:Dataset) -> None:
     print(f"Mean time per sample: {mean_time} seconds")
 
 def compare_3_datasets():
-    test_root = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/input_256/'
-    test_mask_dir = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/mask_256/'
+    test_root = '/input_256/'
+    test_mask_dir = '/mask_256/'
     dataset_v2 = InpaintingDatasetV2(test_root, num_frames=10, json_file_path=None,
                         enable_mask=True, mask_root_dir=test_mask_dir, 
                         is_training_set=True, train_split_ratio=0.7,
