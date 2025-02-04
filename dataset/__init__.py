@@ -1,11 +1,13 @@
 import os
 import re
 import json
+import time
 from typing import Tuple, List, Dict, Any
 
 import numpy as np
 import torch
 from torch import Tensor
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.transforms import ToTensor, Lambda, Compose
@@ -270,7 +272,7 @@ class InpaintingDatasetV2(Dataset):
                  data_root_dir: str,
                  num_frames: int,
                  json_file_path: str = None,
-                 resize_shape: Tuple[int, int] = (256, 256),
+                 resize_shape: Tuple[int, int] | bool = (256, 256),
                  enable_mask: bool = False,
                  mask_root_dir: str = None,
                  is_training_set: bool = True,
@@ -346,14 +348,18 @@ class InpaintingDatasetV2(Dataset):
                                    if self.enable_mask else [None] * len(chunk))
         for data_path, mask_path in zip(chunk, mask_paths):
             array = np.load(data_path)
-            array[np.isnan(array)] = 1.0
-            array[array == 0.0] = 1.0
+            array = np.where((array == 0.0) | np.isnan(array), 1.0, array)
             data_tensor = self.transform(array)
             if self.enable_mask and mask_path is not None:
                 mask_array = np.load(mask_path)
-                mask_array[~np.isnan(mask_array)] = 1.0
-                mask_array[np.isnan(mask_array)] = 0.0
-                mask_tensor = torch.resize_as_(torch.from_numpy(mask_array).unsqueeze(0).float(), data_tensor)
+                mask_array = np.where(np.isnan(mask_array), 0.0, 1.0)
+                mask_tensor = torch.from_numpy(mask_array).unsqueeze(0).float()
+                if mask_tensor.shape != data_tensor.shape:
+                    mask_tensor = F.interpolate(
+                        mask_tensor.unsqueeze(0),  
+                        size=data_tensor.shape[-2:],
+                        mode='nearest'
+                    ).squeeze(0)
                 in_data, _ = self._apply_mask(data_tensor, mask_tensor)
             else:
                 in_data, _ = self._apply_random_mask(data_tensor)
@@ -371,42 +377,159 @@ class InpaintingDatasetV2(Dataset):
         return data * mask, mask
 
     @staticmethod
-    def _apply_random_mask(data: Tensor) -> Tuple[Tensor, Tensor]:
-        shape = data.shape
-        rand_mask = torch.from_numpy(np.where(np.random.normal(loc=100, scale=10, size=shape) < 90, 0, 1)).float()
-        return data * rand_mask, rand_mask
+    def _apply_random_mask(data: Tensor, p: int = 90) -> Tuple[Tensor, Tensor]:
+        mask = (torch.rand_like(data) < p).float()
+        return data * mask, mask
 
+from concurrent.futures import ThreadPoolExecutor
+import torch.multiprocessing as mp
+class InpaintingDatasetV3(InpaintingDatasetV2):
+
+    def __init__(self, 
+                 data_root_dir, 
+                 num_frames, 
+                 json_file_path = None, 
+                 resize_shape = (256, 256), 
+                 enable_mask = False, 
+                 mask_root_dir = None, 
+                 is_training_set = True, 
+                 train_split_ratio = 0.7, 
+                 global_mean = None, 
+                 global_std = None, 
+                 apply_log = True, 
+                 apply_normalize = True):
+        super().__init__(data_root_dir, num_frames, json_file_path, resize_shape, enable_mask, mask_root_dir, is_training_set, train_split_ratio, global_mean, global_std, apply_log, apply_normalize)
+
+    def __getitem__(self, index: int) -> Tuple[int, Tensor, Tensor]:
+        chunk = self.chunk_list[index]
+        mask_paths: List[Any] = (self.mask_chunk_list[min(index, len(self.mask_chunk_list)-1)]
+                                if self.enable_mask else [None] * len(chunk))
+
+        # 使用多线程并行加载数据
+        with ThreadPoolExecutor() as executor:
+            data_futures = [executor.submit(self._load_and_preprocess, data_path, mask_path) for data_path, mask_path in zip(chunk, mask_paths)]
+            results = [future.result() for future in data_futures]
+
+        inputs_list, target_list = zip(*results)
+        inputs = torch.stack(inputs_list, dim=0)
+        targets = torch.stack(target_list, dim=0)
+        return index, inputs.float(), targets.float()
+
+    def _load_and_preprocess(self, data_path: str, mask_path: str) -> Tuple[Tensor, Tensor]:
+        array = np.load(data_path)
+        array = np.where((array == 0.0) | np.isnan(array), 1.0, array)
+        data_tensor = self.transform(array)
+        if self.enable_mask and mask_path is not None:
+            mask_array = np.load(mask_path)
+            mask_array = np.where(np.isnan(mask_array), 0.0, 1.0)
+            mask_tensor = torch.from_numpy(mask_array).unsqueeze(0).float()
+            if mask_tensor.shape != data_tensor.shape:
+                mask_tensor = F.interpolate(
+                    mask_tensor.unsqueeze(0),  
+                    size=data_tensor.shape[-2:],
+                    mode='nearest'
+                ).squeeze(0)
+            in_data, _ = self._apply_mask(data_tensor, mask_tensor)
+        else:
+            in_data, _ = self._apply_random_mask(data_tensor)
+        return in_data, data_tensor
+
+class InpaintingDatasetV4(InpaintingDatasetV2):
+    def __init__(self, data_root_dir, num_frames, json_file_path = None, resize_shape = (256, 256), enable_mask = False, mask_root_dir = None, is_training_set = True, train_split_ratio = 0.7, global_mean = None, global_std = None, apply_log = True, apply_normalize = True):
+        resize_shape = False
+        super().__init__(data_root_dir, num_frames, json_file_path, resize_shape, enable_mask, mask_root_dir, is_training_set, train_split_ratio, global_mean, global_std, apply_log, apply_normalize)
+    
+    def __getitem__(self, index):
+        chunk = self.chunk_list[index]
+        arrays: List[np.ndarray] = [np.load(data_path) for data_path in chunk]
+        array_3d = np.stack(arrays, axis=0)
+        array_3d = np.where((array_3d == 0.0) | np.isnan(array_3d), 1.0, array_3d)
+        array_3d = np.transpose(array_3d, (1, 2, 0))
+        data_tensor:Tensor = self.transform(array_3d)
+        data_tensor = data_tensor.unsqueeze(1)
+        mask_paths: List[Any] = (self.mask_chunk_list[min(index, len(self.mask_chunk_list)-1)]
+                                if self.enable_mask else [None] * len(chunk))
+        if self.enable_mask:
+            mask_arrays = [np.load(mask_path) for mask_path in mask_paths]
+            mask_3d = np.stack(mask_arrays, axis=0)
+            mask_3d = np.where(np.isnan(mask_3d), 0.0, 1.0)
+            mask_tensor = torch.from_numpy(mask_3d).unsqueeze(1).float()
+            if mask_tensor.shape != data_tensor.shape:
+                raise ValueError(f"Mask shape {mask_tensor.shape} does not match data shape {data_tensor.shape}")
+            in_data, _ = self._apply_mask(data_tensor, mask_tensor)
+        else:
+            in_data, _ = self._apply_random_mask(data_tensor)
+        
+        return index, in_data.float(), data_tensor.float()
 
 # Detailed test functions to ensure dataset stability and error handling.
-def test_inpainting_dataset_v2() -> None:
+def test_dataset(ds_cls:Dataset) -> None:
     """
     Test function for InpaintingDatasetV2.
     Validates loading, transformation and error handling.
     """
-    test_root = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/mask_256/'
+    test_root = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/input_256/'
     test_mask_dir = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/mask_256/'
     try:
-        dataset = InpaintingDatasetV2(test_root, num_frames=10, json_file_path=None,
-                                      enable_mask=True, mask_root_dir=test_mask_dir, is_training_set=True, train_split_ratio=0.7)
+        dataset = ds_cls(test_root, num_frames=10, json_file_path=None,
+                        enable_mask=True, mask_root_dir=test_mask_dir, 
+                        is_training_set=True, train_split_ratio=0.7,
+                        apply_log=True, apply_normalize=False, resize_shape=False
+                        )
     except Exception as e:
         print(f"Error initializing dataset: {e}")
         return
-    from time import time
     print(f"Dataset length: {len(dataset)}")
-    for i in range(20):
+    start = time.time()
+    for i in range(len(dataset)):
         try:
             # Load and process sample. 
-            # record time cost
-            start = time()            
             idx, inputs, targets = dataset[i]
-            print(f"Time cost for sample {i}: {time()-start}")
             assert inputs.shape == targets.shape, "Input and target shapes mismatch"
-            print(f"Sample {idx}: inputs shape {inputs.shape}, targets shape {targets.shape}")
+            # print(f"Sample {idx}: inputs shape {inputs.shape}, targets shape {targets.shape}")
         except Exception as err:
             print(f"Error processing sample {i}: {err}")
+    end = time.time()
+    mean_time = (end - start) / len(dataset)
+    print(f"Mean time per sample: {mean_time} seconds")
+
+def compare_3_datasets():
+    test_root = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/input_256/'
+    test_mask_dir = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/mask_256/'
+    dataset_v2 = InpaintingDatasetV2(test_root, num_frames=10, json_file_path=None,
+                        enable_mask=True, mask_root_dir=test_mask_dir, 
+                        is_training_set=True, train_split_ratio=0.7,
+                        apply_log=True, apply_normalize=False, resize_shape=False
+                        )
+    dataset_v3 = InpaintingDatasetV3(test_root, num_frames=10, json_file_path=None,
+                        enable_mask=True, mask_root_dir=test_mask_dir, 
+                        is_training_set=True, train_split_ratio=0.7,
+                        apply_log=True, apply_normalize=False
+                        )
+    dataset_v4 = InpaintingDatasetV4(test_root, num_frames=10, json_file_path=None,
+                        enable_mask=True, mask_root_dir=test_mask_dir, 
+                        is_training_set=True, train_split_ratio=0.7,
+                        apply_log=True, apply_normalize=False
+                        )
+    for i in range(len(dataset_v2)):
+        idx_v2, inputs_v2, targets_v2 = dataset_v2[i]
+        idx_v3, inputs_v3, targets_v3 = dataset_v3[i]
+        idx_v4, inputs_v4, targets_v4 = dataset_v4[i]
+        assert torch.allclose(inputs_v2, inputs_v3),   f"DatasetV2 and DatasetV3 inputs  mismatch at index {i}"
+        assert torch.allclose(targets_v2, targets_v3), f"DatasetV2 and DatasetV3 targets mismatch at index {i}"
+        assert torch.allclose(inputs_v2, inputs_v4),   f"DatasetV2 and DatasetV4 inputs  mismatch at index {i}"
+        assert torch.allclose(targets_v2, targets_v4), f"DatasetV2 and DatasetV4 targets mismatch at index {i}"
+    print("All datasets are consistent.")
 
 if __name__ == '__main__':
-    # Run tests for both datasets.
     print("Testing InpaintingDatasetV2...")
-    test_inpainting_dataset_v2()
-    # ...existing test code for InpaintingDataset if needed...
+    test_dataset(InpaintingDatasetV2)
+    print("------------------------------")
+    print("Testing InpaintingDatasetV3...")
+    test_dataset(InpaintingDatasetV3)
+    print("------------------------------")
+    print("Testing InpaintingDatasetV4...")
+    test_dataset(InpaintingDatasetV4)
+    print("------------------------------")
+    print("Comparing datasets...")
+    compare_3_datasets()
