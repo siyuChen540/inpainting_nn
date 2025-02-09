@@ -475,14 +475,107 @@ class InpaintingDatasetV4(InpaintingDatasetV2):
         
         return index, in_data.float(), data_tensor.float()
 
+import time
+
+class InpaintingDatasetV5(InpaintingDatasetV2):
+    def __init__(self, data_root_dir, num_frames, json_file_path=None, resize_shape=(256, 256), enable_mask=False, mask_root_dir=None, is_training_set=True, train_split_ratio=0.7, global_mean=None, global_std=None, apply_log=True, apply_normalize=True):
+        resize_shape = False
+        super().__init__(data_root_dir, num_frames, json_file_path, resize_shape, enable_mask, mask_root_dir, is_training_set, train_split_ratio, global_mean, global_std, apply_log, apply_normalize)
+
+    def __getitem__(self, index):
+        start_time = time.time()
+        
+        chunk = self.chunk_list[index]
+        arrays: List[np.ndarray] = [np.load(data_path) for data_path in chunk]
+        print(f"Data paths: {chunk}")
+        load_time = time.time()
+        array_sizes:list[int] = [os.path.getsize(data_path) for data_path in chunk]
+        print(f"Data file sizes: {array_sizes}")
+        print(f"Number of data files: {len(chunk)}")
+        
+        
+        array_3d = np.stack(arrays, axis=0)
+        stack_time = time.time()
+        
+        array_3d = np.where((array_3d == 0.0) | np.isnan(array_3d), 1.0, array_3d)
+        where_time = time.time()
+        
+        array_3d = np.transpose(array_3d, (1, 2, 0))
+        transpose_time = time.time()
+        
+        data_tensor: Tensor = self.transform(array_3d)
+        transform_time = time.time()
+        
+        data_tensor = data_tensor.unsqueeze(1)
+        unsqueeze_time = time.time()
+        
+        mask_paths: List[Any] = (self.mask_chunk_list[min(index, len(self.mask_chunk_list)-1)]
+                                 if self.enable_mask else [None] * len(chunk))
+        mask_paths_time = time.time()
+        
+        if self.enable_mask:
+            # 打印掩码文件大小和数量
+            mask_sizes = [os.path.getsize(mask_path) for mask_path in mask_paths]
+            print(f"Mask file sizes: {mask_sizes}")
+            print(f"Number of mask files: {len(mask_paths)}")
+            
+            mask_check_time = time.time()
+            # # 使用多线程并行加载掩码文件
+            with ThreadPoolExecutor() as executor:
+                mask_arrays = list(executor.map(np.load, chunk))
+            mask_load_time = time.time()
+            
+            mask_3d = np.stack(mask_arrays, axis=0)
+            mask_stack_time = time.time()
+            
+            mask_3d = np.where(np.isnan(mask_3d), 0.0, 1.0)
+            mask_where_time = time.time()
+            
+            mask_tensor = torch.from_numpy(mask_3d).unsqueeze(1).float()
+            mask_tensor_time = time.time()
+            
+            if mask_tensor.shape != data_tensor.shape:
+                raise ValueError(f"Mask shape {mask_tensor.shape} does not match data shape {data_tensor.shape}")
+            
+            in_data, _ = self._apply_mask(data_tensor, mask_tensor)
+            apply_mask_time = time.time()
+        else:
+            in_data, _ = self._apply_random_mask(data_tensor)
+            apply_random_mask_time = time.time()
+        
+        end_time = time.time()
+        
+        total_time = end_time - start_time
+        print(f"Load time: {load_time - start_time:.4f}s ({(load_time - start_time) / total_time * 100:.2f}%)")
+        print(f"Stack time: {stack_time - load_time:.4f}s ({(stack_time - load_time) / total_time * 100:.2f}%)")
+        print(f"Where time: {where_time - stack_time:.4f}s ({(where_time - stack_time) / total_time * 100:.2f}%)")
+        print(f"Transpose time: {transpose_time - where_time:.4f}s ({(transpose_time - where_time) / total_time * 100:.2f}%)")
+        print(f"Transform time: {transform_time - transpose_time:.4f}s ({(transform_time - transpose_time) / total_time * 100:.2f}%)")
+        print(f"Unsqueeze time: {unsqueeze_time - transform_time:.4f}s ({(unsqueeze_time - transform_time) / total_time * 100:.2f}%)")
+        print(f"Mask paths time: {mask_paths_time - unsqueeze_time:.4f}s ({(mask_paths_time - unsqueeze_time) / total_time * 100:.2f}%)")
+        
+        if self.enable_mask:
+            print(f"Mask check time: {mask_check_time - mask_paths_time:.4f}s ({(mask_check_time - mask_paths_time) / total_time * 100:.2f}%)")
+            print(f"Mask load time: {mask_load_time - mask_check_time:.4f}s ({(mask_load_time - mask_check_time) / total_time * 100:.2f}%)")
+            print(f"Mask stack time: {mask_stack_time - mask_load_time:.4f}s ({(mask_stack_time - mask_load_time) / total_time * 100:.2f}%)")
+            print(f"Mask where time: {mask_where_time - mask_stack_time:.4f}s ({(mask_where_time - mask_stack_time) / total_time * 100:.2f}%)")
+            print(f"Mask tensor time: {mask_tensor_time - mask_where_time:.4f}s ({(mask_tensor_time - mask_where_time) / total_time * 100:.2f}%)")
+            print(f"Apply mask time: {apply_mask_time - mask_tensor_time:.4f}s ({(apply_mask_time - mask_tensor_time) / total_time * 100:.2f}%)")
+        else:
+            print(f"Apply random mask time: {apply_random_mask_time - mask_paths_time:.4f}s ({(apply_random_mask_time - mask_paths_time) / total_time * 100:.2f}%)")
+        
+        print(f"Total time: {total_time:.4f}s")
+        
+        return index, in_data.float(), data_tensor.float()
+
 # Detailed test functions to ensure dataset stability and error handling.
 def test_dataset(ds_cls:Dataset) -> None:
     """
     Test function for InpaintingDatasetV2.
     Validates loading, transformation and error handling.
     """
-    test_root = '/input_256/'
-    test_mask_dir = '/mask_256/'
+    test_root = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/input_256/'
+    test_mask_dir = 'E:/04_DevelopReleas/02_test_MArineSIR/dataset/train/mask_256/'
     try:
         dataset = ds_cls(test_root, num_frames=10, json_file_path=None,
                         enable_mask=True, mask_root_dir=test_mask_dir, 
@@ -535,14 +628,19 @@ def compare_3_datasets():
     print("All datasets are consistent.")
 
 if __name__ == '__main__':
-    print("Testing InpaintingDatasetV2...")
-    test_dataset(InpaintingDatasetV2)
+    # print("Testing InpaintingDatasetV2...")
+    # test_dataset(InpaintingDatasetV2)
+    # print("------------------------------")
+    # print("Testing InpaintingDatasetV3...")
+    # test_dataset(InpaintingDatasetV3)
+    # print("------------------------------")
+    # print("Testing InpaintingDatasetV4...")
+    # test_dataset(InpaintingDatasetV4)
+    # print("------------------------------")
+    # print("Comparing datasets...")
+    # compare_3_datasets()
+    # print("All tests passed successfully.")
     print("------------------------------")
-    print("Testing InpaintingDatasetV3...")
-    test_dataset(InpaintingDatasetV3)
+    print("Testing InpaintingDatasetV5...")
+    test_dataset(InpaintingDatasetV5)
     print("------------------------------")
-    print("Testing InpaintingDatasetV4...")
-    test_dataset(InpaintingDatasetV4)
-    print("------------------------------")
-    print("Comparing datasets...")
-    compare_3_datasets()
